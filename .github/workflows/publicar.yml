@@ -1,0 +1,49 @@
+# Gera o Baixador.exe (Windows), testa e anexa na Release.
+# Para publicar uma versão: no GitHub, Releases > Draft a new release > crie a tag (v3.2, v3.3...) > Publish.
+# O Baixador.exe é gerado e anexado à release em uns 10 minutos. "Run workflow" (aba Actions) só gera, sem publicar.
+name: Publicar versão
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  VERSAO: ${{ github.event_name == 'release' && github.event.release.tag_name || '' }}
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Preparar o código
+        run: python ferramentas/preparar.py
+      - name: Instalar dependências
+        run: python -m pip install --upgrade pip pyinstaller pywebview yt-dlp pillow
+      - name: Gerar Baixador.exe
+        run: pyinstaller --noconfirm --clean --onefile --windowed --name Baixador --icon baixador.ico --collect-submodules yt_dlp --collect-all webview --hidden-import clr build/Baixador.py
+      - name: Testar o .exe (abre sem janela e responde)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\Baixador.exe" -ArgumentList "--no-window","--nova","--porta=47720" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            try { $r = Invoke-RestMethod -Uri "http://127.0.0.1:47720/api/ping?inst=1" -TimeoutSec 3; if ($r.app -eq "baixador") { $ok = $true; break } } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ok) { Get-Content "$env:LOCALAPPDATA\Baixador\baixador_log.txt" -ErrorAction SilentlyContinue; throw "o .exe não respondeu" }
+          $html = Invoke-WebRequest -Uri "http://127.0.0.1:47720/" -UseBasicParsing -TimeoutSec 30
+          if ($html.Content -notmatch "Baixador") { throw "a tela não carregou" }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/Baixador.exe
+      - name: Anexar na Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/Baixador.exe
